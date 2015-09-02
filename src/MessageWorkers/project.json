@@ -1,0 +1,21 @@
+﻿{
+  "version": "1.0.0-*",
+  "description": "ConsoleApp1 Console Application",
+  "authors": [ "antho" ],
+  "tags": [ "" ],
+  "projectUrl": "",
+  "licenseUrl": "",
+
+  "dependencies": {
+    "Rx-Linq": "2.2.5",
+    "Rx-PlatformServices": "2.2.5"
+  },
+
+  "commands": {
+    "MessageWorkers": "MessageWorkers"
+  },
+
+  "frameworks": {
+    "dnx451": { }
+  }
+}
