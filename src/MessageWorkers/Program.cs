@@ -40,7 +40,7 @@ namespace MessageWorkers
                 if (stall)
                 {
                     stall = false;
-                    Thread.Sleep(60000);
+                    Thread.Sleep(30000);
                 }
             });
 
@@ -55,20 +55,18 @@ namespace MessageWorkers
 
     public class MessageBroker
     {
+        private readonly ISubject<Message> _internalOffRequestThreadSubject;
         private readonly ISubject<Message> _onRequestThreadSubject;
-        private readonly ISubject<Message> _offRequestThreadSubject; 
+        private readonly ISubject<Message> _offRequestThreadSubject;
 
         public MessageBroker()
         {
             _onRequestThreadSubject = new Subject<Message>();
             _offRequestThreadSubject = new Subject<Message>();
+            _internalOffRequestThreadSubject = new Subject<Message>();
 
-            // bring the data from the request thread onto a different thread
-            // TODO: Instead of having this as one of the on thread subscribers, should spawn in SendMessage
-            _onRequestThreadSubject.ObserveOn(TaskPoolScheduler.Default).Subscribe(message =>
-            {
-                _offRequestThreadSubject.OnNext(message);
-            });
+            // ensure off-request data is observed onto a different thread
+            _internalOffRequestThreadSubject.Subscribe(x => Observable.Start(() => _offRequestThreadSubject.OnNext(x), TaskPoolScheduler.Default));
         }
 
         public IObservable<Message> OnRequestThread
@@ -83,10 +81,12 @@ namespace MessageWorkers
 
         public void SendMessage(Message message)
         {
+            _internalOffRequestThreadSubject.OnNext(message);
+
             // Question: Is this blocking? Given that MessageBroker is a signelton
             //           does it mean what only one message at a time can go through
             //           the observable pipeline
-            // Tests: Current tests should that subscribers run on the same thread 
+            // Answer: Current tests should that subscribers run on the same thread 
             //        that generated the message, this would imply that its ok?
             _onRequestThreadSubject.OnNext(message);
         }
