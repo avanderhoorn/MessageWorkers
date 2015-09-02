@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,7 +15,7 @@ namespace MessageWorkers
         public void Main(string[] args)
         {
 
-            var messageBroker = new MessageBroker();
+            var messageBroker = new MessageBroker(new SlowMessagePublisher());
             var messageGenerator = new MessageGenerator(messageBroker);
 
             // On Request thread subscribers
@@ -32,7 +33,7 @@ namespace MessageWorkers
             var stall = true;
             messageBroker.OffRequestThread.Subscribe(message =>
             {
-                Console.WriteLine($"Off Req Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+                Console.WriteLine($"Off Req Observable v  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
 
                 // QUESTION: This blocks until the minute is up from any other workers eating
                 //           away at the queue, I would have thought that leveraging TaskPoolScheduler
@@ -40,12 +41,11 @@ namespace MessageWorkers
                 if (stall)
                 {
                     stall = false;
-                    Thread.Sleep(30000);
+                    Thread.Sleep(60000);
                 }
+                Console.WriteLine($"Off Req Observable ^  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
             });
-
-
-
+            
             messageGenerator.Start();
 
             Console.ReadLine();
@@ -55,18 +55,21 @@ namespace MessageWorkers
 
     public class MessageBroker
     {
-        private readonly ISubject<Message> _internalOffRequestThreadSubject;
         private readonly ISubject<Message> _onRequestThreadSubject;
         private readonly ISubject<Message> _offRequestThreadSubject;
+        private readonly ISubject<Message> _offRequestThreadInternalSubject;
+        private readonly IMessagePublisher _messagePublisher;
 
-        public MessageBroker()
+        public MessageBroker(IMessagePublisher messagePublisher)
         {
+            _messagePublisher = messagePublisher;
+
             _onRequestThreadSubject = new Subject<Message>();
             _offRequestThreadSubject = new Subject<Message>();
-            _internalOffRequestThreadSubject = new Subject<Message>();
+            _offRequestThreadInternalSubject = new Subject<Message>();
 
             // ensure off-request data is observed onto a different thread
-            _internalOffRequestThreadSubject.Subscribe(x => Observable.Start(() => _offRequestThreadSubject.OnNext(x), TaskPoolScheduler.Default));
+            _offRequestThreadInternalSubject.Subscribe(x => Observable.Start(() => _offRequestThreadSubject.OnNext(x), TaskPoolScheduler.Default));
         }
 
         public IObservable<Message> OnRequestThread
@@ -81,14 +84,53 @@ namespace MessageWorkers
 
         public void SendMessage(Message message)
         {
-            _internalOffRequestThreadSubject.OnNext(message);
+            // should be non-blocking but up to implementation 
+            _messagePublisher.Publish(message);
 
-            // Question: Is this blocking? Given that MessageBroker is a signelton
-            //           does it mean what only one message at a time can go through
-            //           the observable pipeline
-            // Answer: Current tests should that subscribers run on the same thread 
-            //        that generated the message, this would imply that its ok?
+            // non-blocking
+            _offRequestThreadInternalSubject.OnNext(message);
+
+            // blocking
             _onRequestThreadSubject.OnNext(message);
+        }
+    }
+
+    public interface IMessagePublisher
+    {
+        void Publish(Message message);
+    }
+
+    public class SlowMessagePublisher : IMessagePublisher
+    {
+        private readonly ISubject<Message> _listenerSubject;
+        private readonly ISubject<IEnumerable<Message>> _senderSubject;
+        private int _count;
+
+        public SlowMessagePublisher()
+        {
+            _listenerSubject = new Subject<Message>();
+            _senderSubject = new Subject<IEnumerable<Message>>();
+
+
+            // ensure off-request message transport is obsered onto a different thread 
+            _listenerSubject.Buffer(TimeSpan.FromMilliseconds(10000)).Subscribe(x => Observable.Start(() => _senderSubject.OnNext(x), TaskPoolScheduler.Default));
+            _senderSubject.Subscribe(Publish);
+        }
+
+        public void Publish(Message message)
+        {
+            _listenerSubject.OnNext(message);
+        }
+
+        private void Publish(IEnumerable<Message> messages)
+        {
+            foreach (var message in messages)
+            {
+                Console.WriteLine($"Publish Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\" -  Group {_count}");
+            }
+            _count++;
+
+            Thread.Sleep(20000);
         }
     }
 
