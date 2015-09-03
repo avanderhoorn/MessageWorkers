@@ -1,0 +1,21 @@
+﻿{
+  "version": "1.0.0-*",
+  "description": "MessageWorkers2 Console Application",
+  "authors": [ "Ryan" ],
+  "tags": [ "" ],
+  "projectUrl": "",
+  "licenseUrl": "",
+
+  "dependencies": {
+    "Rx-Linq": "2.2.5",
+    "Rx-PlatformServices": "2.2.5"
+  },
+
+  "commands": {
+    "MessageWorkers2": "MessageWorkers2"
+  },
+
+  "frameworks": {
+    "dnx451": { }
+  }
+}
