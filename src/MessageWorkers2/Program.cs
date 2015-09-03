@@ -15,6 +15,7 @@ namespace MessageWorkers2
     {
         public static int MessagesGenerated = 0;
         public static int MessagesSent = 0;
+        public static bool Debug = false;
 
         public void Main(string[] args)
         {
@@ -24,15 +25,27 @@ namespace MessageWorkers2
             // On Request thread subscribers
             messageBroker.OnRequestThread.Subscribe(message =>
             {
+                if (Debug)
+                    Console.WriteLine($"On Req Observable v   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+
                 // Simulate some amount of work.
                 GC.KeepAlive("Hello".GetHashCode());
+
+                if (Debug)
+                    Console.WriteLine($"On Req Observable ^   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
             });
 
             // Off Request thread subscribers
             messageBroker.OffRequestThread.Subscribe(message => Task.Run(async () =>
             {
+                if (Debug)
+                    Console.WriteLine($"Off Req Observable v  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+
                 // Simulate some expensive async operation
-                await Task.Delay(250);
+                await Task.Delay(Thread.CurrentThread.ManagedThreadId % 2 == 0 ? 150 : 30);
+
+                if (Debug)
+                    Console.WriteLine($"Off Req Observable ^  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
             }));
 
             var stopwatch = Stopwatch.StartNew();
@@ -50,6 +63,7 @@ namespace MessageWorkers2
                 Console.WriteLine($"Messages Sent: {MessagesSent}");
                 Console.WriteLine($"Time Elapsed: {elapsed}");
                 Console.WriteLine($"Requests/sec: {(double)MessagesSent / ((double)elapsed.Ticks / (double)TimeSpan.FromSeconds(1).Ticks)}");
+                Console.WriteLine($"Generated/sec: {(double)MessagesGenerated / ((double)elapsed.Ticks / (double)TimeSpan.FromSeconds(1).Ticks)}");
                 Console.WriteLine();
                 Console.WriteLine();
             }
@@ -234,5 +248,19 @@ namespace MessageWorkers2
         {
             Stop();
         }
+    }
+
+    public class Message
+    {
+        public Message(string description)
+        {
+            Description = description;
+        }
+
+        public Guid Id => Guid.NewGuid();
+
+        public DateTime DateTime => DateTime.Now;
+
+        public string Description { get; }
     }
 }

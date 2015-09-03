@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -59,9 +60,12 @@ namespace MessageWorkers
 
     public class Program
     {
+        public static int MessagesGenerated = 0;
+        public static int MessagesSent = 0;
+        public static bool Debug = false;
+
         public void Main(string[] args)
         {
-
             var messageBroker = new MessageBroker(new SlowMessagePublisher());
             var messageGenerator = new MessageGenerator(messageBroker);
 
@@ -71,11 +75,14 @@ namespace MessageWorkers
             //     - One slow subscriber doesn't block other on request subscribers 
             messageBroker.OnRequestThread.Subscribe(message =>
             {
-                Console.WriteLine($"On Req Observable v   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+                if (Debug)
+                    Console.WriteLine($"On Req Observable v   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
 
-                Thread.Sleep(Thread.CurrentThread.ManagedThreadId % 2 == 0 ? 20000 : 50);
+                // Simulate some amount of work.
+                GC.KeepAlive("Hello".GetHashCode());
 
-                Console.WriteLine($"On Req Observable ^   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+                if (Debug)
+                    Console.WriteLine($"On Req Observable ^   - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
             });
 
             // TEST: Off Request 
@@ -83,23 +90,37 @@ namespace MessageWorkers
             //     - That they run on a different thread as the origin request 
             //     - One slow subscriber doesn't block other off request subscribers 
             //     - When needed other workers are brought in to handel the load
-            var stall = true;
-            messageBroker.OffRequestThread.Subscribe(message =>
+            messageBroker.OffRequestThread.Subscribe(async message =>
             {
-                Console.WriteLine($"Off Req Observable v  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+                if (Debug)
+                    Console.WriteLine($"Off Req Observable v  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
                 
-                if (stall)
-                {
-                    stall = false;
-                    Thread.Sleep(60000);
-                }
+                // Simulate some expensive async operation
+                await Task.Delay(Thread.CurrentThread.ManagedThreadId % 2 == 0 ? 150 : 30);
 
-                Console.WriteLine($"Off Req Observable ^  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
+                if (Debug)
+                    Console.WriteLine($"Off Req Observable ^  - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\"");
             });
-            
-            messageGenerator.Start();
 
-            Console.ReadLine();
+
+            var stopwatch = Stopwatch.StartNew();
+            messageGenerator.Start();
+            
+            Console.WriteLine("Press the ANY key to get a summary.");
+            Console.WriteLine("Press Ctrl+C to quit.");
+            while (true)
+            {
+                Console.ReadLine();
+
+                var elapsed = stopwatch.Elapsed;
+                Console.WriteLine($"Messages Generated: {MessagesGenerated}");
+                Console.WriteLine($"Messages Sent: {MessagesSent}");
+                Console.WriteLine($"Time Elapsed: {elapsed}");
+                Console.WriteLine($"Requests/sec: {(double)MessagesSent / ((double)elapsed.Ticks / (double)TimeSpan.FromSeconds(1).Ticks)}");
+                Console.WriteLine($"Generated/sec: {(double)MessagesGenerated / ((double)elapsed.Ticks / (double)TimeSpan.FromSeconds(1).Ticks)}");
+                Console.WriteLine();
+                Console.WriteLine();
+            }
         }
         
     }
@@ -140,10 +161,10 @@ namespace MessageWorkers
         {
             // non-blocking ***
             _publisherInternalSubject.OnNext(message);
-
+            
             // non-blocking
             _offRequestThreadInternalSubject.OnNext(message);
-
+            
             // blocking
             _onRequestThreadSubject.OnNext(message);
         }
@@ -168,7 +189,14 @@ namespace MessageWorkers
             _listenerSubject = new Subject<Message>(); 
             
             // ensure off-request message transport is obsered onto a different thread 
-            _listenerSubject.Buffer(TimeSpan.FromMilliseconds(10000)).Subscribe(x => Observable.Start(async () => await Publish(x), TaskPoolScheduler.Default)); 
+            _listenerSubject.Buffer(TimeSpan.FromMilliseconds(100)).Subscribe(
+                x => {
+                    // QUESTION: Is there a way to only let the buffer go if it has something to publish?
+                    if (x.Any())
+                    {
+                        Observable.Start(async () => await Publish(x), TaskPoolScheduler.Default);
+                    }
+                }); 
         }
 
         public void Publish(Message message)
@@ -179,15 +207,20 @@ namespace MessageWorkers
         private async Task Publish(IEnumerable<Message> messages)
         {
             // Trying to simulate a slow activity i.e. HttpClient which has an await for sending over network
-            await Task.Factory.StartNew(() =>
+            await Task.Factory.StartNew(async () =>
                 {
-                    foreach (var message in messages)
+                    if (Program.Debug)
                     {
-                        Console.WriteLine($"Publish Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\" -  Group {_count}");
+                        foreach (var message in messages)
+                        {
+                            Console.WriteLine($"Publish Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\" -  Group {_count}");
+                        }
                     }
-                    _count++;
 
-                    Thread.Sleep(20000);
+                    Interlocked.Increment(ref _count);
+                    Interlocked.Add(ref Program.MessagesSent, messages.Count());
+
+                    await Task.Delay(Thread.CurrentThread.ManagedThreadId % 2 == 0 ? 300 : 500); 
                 });
         }
     }
@@ -203,23 +236,28 @@ namespace MessageWorkers
         private Random Random { get; }
 
         private MessageBroker MessageBroker { get; }
-
+        
         public void Start()
         {
-            var count = 0;
-            for (var i = 0; i < 2; i++)
+            for (var i = 0; i < 10; i++)
             {
                 Task.Factory.StartNew(() =>
                 {
+                    var count = 0;
+                    var seed = Thread.CurrentThread.ManagedThreadId;
+                    var random = new Random(seed);
+
                     while (true)
                     {
-                        var sleep = Random.Next(5000, 6000);
-                        var description = $"Item {count++} - Thread {Thread.CurrentThread.ManagedThreadId} (sleep {sleep})";
+                        var messageCount = random.Next(10, 20);
 
-                        Console.WriteLine($"Generated             - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{description}\"");
+                        for (var j = 0; j < messageCount; j++)
+                        {
+                            MessageBroker.SendMessage(new Message($"Message {Program.MessagesGenerated} - Thread {seed} ({count++})"));
+                            Interlocked.Increment(ref Program.MessagesGenerated);
+                        }
 
-                        MessageBroker.SendMessage(new Message(description));
-                        Thread.Sleep(sleep);
+                        Thread.Sleep(random.Next(50, 250));
                     }
                 });
             }
