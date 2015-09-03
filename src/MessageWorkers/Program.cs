@@ -103,18 +103,15 @@ namespace MessageWorkers
     public class SlowMessagePublisher : IMessagePublisher
     {
         private readonly ISubject<Message> _listenerSubject;
-        private readonly ISubject<IEnumerable<Message>> _senderSubject;
         private int _count;
 
         public SlowMessagePublisher()
         {
-            _listenerSubject = new Subject<Message>();
-            _senderSubject = new Subject<IEnumerable<Message>>();
+            _listenerSubject = new Subject<Message>(); 
 
 
             // ensure off-request message transport is obsered onto a different thread 
-            _listenerSubject.Buffer(TimeSpan.FromMilliseconds(10000)).Subscribe(x => Observable.Start(() => _senderSubject.OnNext(x), TaskPoolScheduler.Default));
-            _senderSubject.Subscribe(Publish);
+            _listenerSubject.Buffer(TimeSpan.FromMilliseconds(10000)).Subscribe(x => Observable.Start(async () => await Publish(x), TaskPoolScheduler.Default)); 
         }
 
         public void Publish(Message message)
@@ -122,15 +119,19 @@ namespace MessageWorkers
             _listenerSubject.OnNext(message);
         }
 
-        private void Publish(IEnumerable<Message> messages)
+        private async Task Publish(IEnumerable<Message> messages)
         {
-            foreach (var message in messages)
-            {
-                Console.WriteLine($"Publish Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\" -  Group {_count}");
-            }
-            _count++;
+            // Trying to simulate a slow activity i.e. HttpClient which has an await for sending over network
+            await Task.Factory.StartNew(() =>
+                {
+                    foreach (var message in messages)
+                    {
+                        Console.WriteLine($"Publish Observable    - Thread {Thread.CurrentThread.ManagedThreadId}     - \"{message.Description}\" -  Group {_count}");
+                    }
+                    _count++;
 
-            Thread.Sleep(20000);
+                    Thread.Sleep(20000);
+                });
         }
     }
 
